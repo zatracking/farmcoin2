@@ -21,20 +21,21 @@ func NewChainHeadSubscription() *ChainHeadSubscription {
 }
 
 func (s *ChainHeadSubscription) FeedFromStream(stream prysmAPI.BeaconChain_StreamChainHeadClient) {
+	log.Info("listening on stream")
+
 	for {
 		select {
 		case <-s.stopChan:
 			close(s.data)
 			return
 		default:
-			log.Info("listening on stream")
 			data, err := stream.Recv()
 			if err != nil {
 				close(s.data)
 				return
 			}
 
-			log.WithField("headSlot", data.GetHeadSlot()).Info("got chain head")
+			log.WithField("headSlot", data.GetHeadSlot()).Debug("got chain head")
 
 			s.data <- types.ChainHead{
 				HeadSlot:           data.HeadSlot,
