@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -11,7 +13,10 @@ import (
 	"github.com/alethio/eth2stats-client/core"
 )
 
+const RetryInterval = time.Second * 12
+
 var runCmd = &cobra.Command{
+	// TODO needs to be migrated to "beacon"
 	Use:   "run",
 	Short: "Connect to the eth2stats server and start sending data",
 	Run: func(cmd *cobra.Command, args []string) {
@@ -19,25 +24,44 @@ var runCmd = &cobra.Command{
 		signal.Notify(stopChan, syscall.SIGINT)
 		signal.Notify(stopChan, syscall.SIGTERM)
 
-		c := core.New(core.Config{
-			Eth2stats: core.Eth2statsConfig{
-				ServerAddr: viper.GetString("eth2stats.addr"),
-				TLS:        viper.GetBool("eth2stats.tls"),
-				NodeName:   viper.GetString("eth2stats.node-name"),
-			},
-			BeaconNodeType: viper.GetString("beacon.type"),
-			BeaconNodeAddr: viper.GetString("beacon.addr"),
-			DataFolder:     viper.GetString("data.folder"),
-		})
-		go c.Run()
+		// TODO all the services need to run from a single cancellable context
+		// TODO dependent services should maybe have a sub context to teardown and recreate that part
+		go func() {
+			for {
+				c := core.New(core.Config{
+					Eth2stats: core.Eth2statsConfig{
+						Version:    fmt.Sprintf("eth2stats-client/%s", RootCmd.Version),
+						ServerAddr: viper.GetString("eth2stats.addr"),
+						TLS:        viper.GetBool("eth2stats.tls"),
+						NodeName:   viper.GetString("eth2stats.node-name"),
+					},
+					BeaconNode: core.BeaconNodeConfig{
+						Type:        viper.GetString("beacon.type"),
+						Addr:        viper.GetString("beacon.addr"),
+						MetricsAddr: viper.GetString("beacon.metrics-addr"),
+					},
+					ValidatorNode: core.ValidatorNodeConfig{
+						Type:        viper.GetString("beacon.type"),
+						MetricsAddr: viper.GetString("validator.metrics-addr"),
+					},
+					DataFolder: viper.GetString("data.folder"),
+				})
+
+				err := c.Run()
+				if err != nil {
+					log.Error(err)
+				}
+
+				// we're only getting here if there's been no error during set up
+				time.Sleep(time.Second * 12)
+				log.Info("retrying...")
+			}
+		}()
 
 		select {
 		case <-stopChan:
-			log.Info("Got stop signal. Finishing work.")
-
-			c.Close()
-
-			log.Info("Work done. Goodbye!")
+			log.Info("got stop signal. finishing work.")
+			log.Info("work done. goodbye!")
 		}
 	},
 }
@@ -52,12 +76,19 @@ func init() {
 	runCmd.Flags().Bool("eth2stats.tls", true, "Enable/disable TLS for eth2stats server connection")
 	viper.BindPFlag("eth2stats.tls", runCmd.Flag("eth2stats.tls"))
 
-	runCmd.Flags().String("beacon.type", "", "Beacon node type [prysm]")
+	runCmd.Flags().String("beacon.type", "", "Beacon node type [prysm, lighthouse]")
 	viper.BindPFlag("beacon.type", runCmd.Flag("beacon.type"))
 
 	runCmd.Flags().String("beacon.addr", "", "Beacon node endpoint address")
 	viper.BindPFlag("beacon.addr", runCmd.Flag("beacon.addr"))
 
+	runCmd.Flags().String("beacon.metrics-addr", "", "The url where the beacon client exposes metrics (used for memory usage)")
+	viper.BindPFlag("beacon.metrics-addr", runCmd.Flag("beacon.metrics-addr"))
+
 	runCmd.Flags().String("data.folder", "./data", "Folder in which to persist data")
 	viper.BindPFlag("data.folder", runCmd.Flag("data.folder"))
+
+	// TODO this needs moving in it's own command when we have a way of linking validator nodes
+	runCmd.Flags().String("validator.metrics-addr", "", "The url where the validator client exposes metrics")
+	viper.BindPFlag("validator.metrics-addr", runCmd.Flag("validator.metrics-addr"))
 }
